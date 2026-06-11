@@ -103,6 +103,41 @@ export interface Job {
   [key: string]: unknown;
 }
 
+// ── Upload / file-ingest types ────────────────────────────────────────────────
+
+export interface CreateUploadInput {
+  contentType: string;
+  maxSizeBytes?: number;
+}
+
+export interface Upload {
+  id: string;
+  uploadUrl: string;
+  method: "PUT";
+  contentType: string;
+  maxSizeBytes: number;
+  expiresAt: string;
+}
+
+export interface CreateFileSourceInput {
+  projectId: string;
+  uploadId: string;
+  name?: string | null;
+  idempotencyKey?: string;
+}
+
+export type KnowledgeInputType = "text" | "file" | "url" | "youtube";
+
+export interface CreateKnowledgeInput {
+  type: KnowledgeInputType;
+  name?: string;
+  projectId?: string;
+  text?: string;
+  uploadId?: string;
+  url?: string;
+  idempotencyKey?: string;
+}
+
 // ── Input types ───────────────────────────────────────────────────────────────
 
 export interface ListPostsInput {
@@ -306,5 +341,21 @@ export class ScripeClient {
 
   async cancelJob(jobId: string): Promise<void> {
     return this.request<void>("POST", `/jobs/${jobId}/cancel`);
+  }
+
+  // ── File uploads ──────────────────────────────────────────────────────────────
+
+  async createUpload(input: CreateUploadInput): Promise<{ data: Upload }> {
+    return this.request<{ data: Upload }>("POST", "/uploads", input);
+  }
+
+  async createFileSource(input: CreateFileSourceInput): Promise<{ data: Job }> {
+    const { idempotencyKey, ...body } = input;
+    return this.request<{ data: Job }>("POST", "/sources", { ...body, type: "file" }, idempotencyKey);
+  }
+
+  async createKnowledge(input: CreateKnowledgeInput): Promise<{ data: Job }> {
+    const { idempotencyKey, ...body } = input;
+    return this.request<{ data: Job }>("POST", "/knowledge", body, idempotencyKey);
   }
 }

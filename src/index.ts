@@ -322,6 +322,116 @@ server.tool(
   }
 );
 
+// ── File ingestion (NOT media attachment) ─────────────────────────────────────
+//
+// These tools let you feed files into Scripe so its AI can extract/transcribe
+// the content and use it to generate post *text*. They do NOT attach images or
+// PDFs to a LinkedIn post as visual media — LinkedIn publishing with media
+// attachments is not supported by the Scripe API.
+
+server.tool(
+  "scripe_create_upload",
+  "Mint a presigned S3 URL so you can upload a file (PDF, image, audio, video) for AI content ingestion. " +
+  "IMPORTANT: this is NOT for attaching media to a LinkedIn post. It makes the file available as source material " +
+  "that Scripe's AI can read/transcribe to generate post text. " +
+  "Step 1 of 2 — follow with scripe_ingest_file_as_source. " +
+  "Supported formats and limits: PDF/DOCX/TXT/MD/HTML (50 MB), PNG/JPEG (25 MB), MP3/WAV (500 MB), MP4/MOV (1 GB). " +
+  "The returned uploadUrl expires in 15 minutes; PUT the file bytes directly to that URL with a matching Content-Type header.",
+  {
+    contentType: z
+      .string()
+      .describe(
+        "MIME type of the file you will upload, e.g. application/pdf, image/png, image/jpeg, audio/mpeg, video/mp4. Must be on Scripe's allow-list."
+      ),
+    maxSizeBytes: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe("File size in bytes (≥1). Defaults to the per-type cap. S3 rejects uploads that exceed this."),
+  },
+  async ({ contentType, maxSizeBytes }) => {
+    const result = await client.createUpload({ contentType, maxSizeBytes });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "scripe_ingest_file_as_source",
+  "Step 2 of 2: after uploading a file to S3 via scripe_create_upload, register it with Scripe as a source. " +
+  "Scripe will extract text from documents or transcribe audio/video; the resulting content can then be used " +
+  "with scripe_generate_post to draft a LinkedIn post. " +
+  "IMPORTANT: this does NOT attach the file as visual media to a LinkedIn post — the file is used for text generation only. " +
+  "Returns a job — poll scripe_get_job until status is DONE, then use scripe_list_posts or scripe_generate_post.",
+  {
+    projectId: z.string().describe("Project ID (proj_*) to attach this source to — required"),
+    uploadId: z.string().describe("Upload ID (upl_*) returned by scripe_create_upload"),
+    name: z
+      .string()
+      .nullish()
+      .describe("Human-readable label for the source (defaults to the S3 key filename)"),
+    idempotencyKey: z.string().optional().describe("Unique key to safely retry without duplicating the ingest job"),
+  },
+  async ({ projectId, uploadId, name, idempotencyKey }) => {
+    const result = await client.createFileSource({
+      projectId,
+      uploadId,
+      name: name ?? undefined,
+      idempotencyKey,
+    });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "scripe_add_to_knowledge_base",
+  "Ingest reference material into your Scripe knowledge base so the AI can draw on it when generating future posts. " +
+  "Accepts four input types: 'text' (plain text up to 1 MB), 'file' (requires a prior scripe_create_upload call), " +
+  "'url' (public web page), or 'youtube' (transcript extracted from a YouTube video). " +
+  "IMPORTANT: this is for knowledge ingestion only — it does NOT attach media to a LinkedIn post. " +
+  "Returns a job — poll scripe_get_job until DONE. Note: read/list/delete for knowledge documents is not yet in the API; use the Scripe dashboard to view ingested documents.",
+  {
+    type: z
+      .enum(["text", "file", "url", "youtube"])
+      .describe("Input type: 'text' = plain text, 'file' = uploaded file (needs uploadId), 'url' = web page, 'youtube' = YouTube video"),
+    name: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("Label for the document (required for 'text' and 'file' types; optional for 'url' and 'youtube', defaults to the URL)"),
+    text: z
+      .string()
+      .optional()
+      .describe("Plain text content — required when type is 'text' (up to 1 MB)"),
+    uploadId: z
+      .string()
+      .optional()
+      .describe("Upload ID (upl_*) from scripe_create_upload — required when type is 'file'"),
+    url: z
+      .string()
+      .optional()
+      .describe("Public URL of a web page or YouTube video — required when type is 'url' or 'youtube'"),
+    projectId: z
+      .string()
+      .optional()
+      .describe("Project ID (proj_*) to scope the document to one project. Omit to make it visible across the whole workspace."),
+    idempotencyKey: z.string().optional().describe("Unique key to safely retry without duplicating the ingest job"),
+  },
+  async ({ type, name, text, uploadId, url, projectId, idempotencyKey }) => {
+    if (type === "text" && !text) {
+      return { content: [{ type: "text", text: "Error: 'text' is required when type is 'text'." }], isError: true };
+    }
+    if (type === "file" && !uploadId) {
+      return { content: [{ type: "text", text: "Error: 'uploadId' is required when type is 'file'. Call scripe_create_upload first." }], isError: true };
+    }
+    if ((type === "url" || type === "youtube") && !url) {
+      return { content: [{ type: "text", text: `Error: 'url' is required when type is '${type}'.` }], isError: true };
+    }
+    const result = await client.createKnowledge({ type, name, text, uploadId, url, projectId, idempotencyKey });
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
 // ── Start server ───────────────────────────────────────────────────────────────
 
 async function main() {
